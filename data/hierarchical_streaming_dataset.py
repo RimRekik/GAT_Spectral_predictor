@@ -290,9 +290,7 @@ class HierarchicalStreamingSpectraDataset(Dataset):
         meta_file = os.path.join(root, "meta.txt")
 
         self.chunk_files = []
-        self.cumulative_sizes = []
-
-        total = 0
+        self.chunk_sizes = []
 
         print("Loading metadata...")
 
@@ -302,20 +300,45 @@ class HierarchicalStreamingSpectraDataset(Dataset):
                 size = int(size)
 
                 self.chunk_files.append(path)
-                total += size
-                self.cumulative_sizes.append(total)
+                self.chunk_sizes.append(size)
 
-        self.total_len = total
+        self._recompute_cumulative_sizes()
 
         self.cache = None
         self.current_chunk_idx = -1
 
         print(f"Total graphs: {self.total_len}")
 
-    def chunk_shuffle(self): #exclude last chunk since it is incomplete
-        rest = self.chunk_files[:-1]
-        random.shuffle(rest)
-        self.chunk_files[:-1] = rest
+    def _recompute_cumulative_sizes(self):
+        """(Re)calcule cumulative_sizes et total_len à partir de l'ordre
+        actuel de chunk_files / chunk_sizes. Doit être appelé après tout
+        réordonnancement de chunk_files (ex: chunk_shuffle)."""
+        self.cumulative_sizes = []
+        total = 0
+        for size in self.chunk_sizes:
+            total += size
+            self.cumulative_sizes.append(total)
+        self.total_len = total
+
+    def chunk_shuffle(self):  # exclude last chunk since it is incomplete
+        # On mélange les fichiers ET leurs tailles ensemble (paires liées),
+        # puis on recalcule cumulative_sizes pour qu'il reste cohérent
+        # avec le nouvel ordre. Sans ça, bisect_right(cumulative_sizes, idx)
+        # renvoie un chunk_idx qui ne correspond plus au bon fichier après
+        # shuffle, ce qui provoque un IndexError intermittent dans get().
+        paired = list(zip(self.chunk_files[:-1], self.chunk_sizes[:-1]))
+        random.shuffle(paired)
+
+        shuffled_files, shuffled_sizes = zip(*paired) if paired else ([], [])
+
+        self.chunk_files[:-1] = list(shuffled_files)
+        self.chunk_sizes[:-1] = list(shuffled_sizes)
+
+        self._recompute_cumulative_sizes()
+
+        # le cache pointait peut-être vers un chunk qui a changé de position
+        self.cache = None
+        self.current_chunk_idx = -1
 
     def len(self):
         return self.total_len
@@ -329,7 +352,7 @@ class HierarchicalStreamingSpectraDataset(Dataset):
 
         # load chunk if needed
         if chunk_idx != self.current_chunk_idx:
-            self.cache = torch.load(self.chunk_files[chunk_idx],weights_only=False)
+            self.cache = torch.load(self.chunk_files[chunk_idx], weights_only=False)
             self.current_chunk_idx = chunk_idx
 
         return self.cache[local_idx]
