@@ -21,7 +21,7 @@ for i, params in enumerate(experiments, 1):
     save_path = f"model/{nom_modele}"
     
     cmd = [
-        "python", "main.py",
+        "python", "../main.py",
         "--lr", str(params["lr"]),
         "--batch_size", str(params["batch_size"]),
         "--hidden_dim", str(params["hidden_dim"]),
