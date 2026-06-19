@@ -210,14 +210,8 @@ class Hierachical_GAT(nn.Module):
 
         if src.numel() > 0:
             # contexte global du graphe correspondant à chaque noeud (pour broadcast par arête)
-            # NOUVEAU CODE SÉCURISÉ
-            # On crée une matrice de taille (batch_size, hidden_dim)
             global_emb_per_graph = h.new_zeros((batch_size, self.hidden_dim))
-
-            # On utilise scatter_ pour éviter les sauts d'index ou les désalignements de masques
-            graph_indices_for_globals = batch[is_global].unsqueeze(-1).expand(-1, self.hidden_dim)
-            global_emb_per_graph.scatter_(0, graph_indices_for_globals, h[is_global])
-
+            global_emb_per_graph[batch[is_global]] = h[is_global]
             global_emb_per_edge = global_emb_per_graph[batch[src]]
 
             edge_emb = torch.cat([h[src], h[dst], global_emb_per_edge], dim=1)
