@@ -1,41 +1,36 @@
 import subprocess
 import itertools
 
-# Définition des paramètres à tester (2 x 2 x 2 = 8 runs)
+# Grille optimisée (18 runs)
 grid = {
-    "lr": [0.001, 0.0005],
-    "batch_size": [256, 512],
-    "hidden_dim": [128, 256]
+    "lr": [0.001, 0.0001],
+    "batch_size": [256],
+    "hidden_dim": [64, 128, 256],
+    "num_layers": [3, 5, 7]
 }
 
-# Génère automatiquement toutes les combinaisons possibles
 keys, values = zip(*grid.items())
 experiments = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-print(f"=== Lancement du Grid Search ({len(experiments)} combinaisons) ===")
+print(f"=== Début du Grid Search : {len(experiments)} configurations ===")
 
 for i, params in enumerate(experiments, 1):
-    print(f"\n[RUN {i}/{len(experiments)}] Paramètres : {params}")
+    print(f"\n[Run {i}/{len(experiments)}] Configuration : {params}")
     
-    # On donne un nom unique au fichier sauvegardé pour ne pas écraser le précédent
-    nom_modele = f"model_lr{params['lr']}_bs{params['batch_size']}_dim{params['hidden_dim']}.pt"
+    nom_modele = f"model_lr{params['lr']}_dim{params['hidden_dim']}_layers{params['num_layers']}.pt"
     save_path = f"model/{nom_modele}"
     
-    # On construit la commande pour exécuter main.py avec les bonnes options
     cmd = [
-        "python", "../main.py",
+        "python", "main.py",
         "--lr", str(params["lr"]),
         "--batch_size", str(params["batch_size"]),
         "--hidden_dim", str(params["hidden_dim"]),
+        "--num_layers", str(params["num_layers"]), # <-- TRÈS IMPORTANT de rajouter cette ligne !
         "--save_path", save_path,
-        "--max_steps", "5000"  # 5000 étapes par run pour aller plus vite (ajustable)
+        "--max_steps", "5000"
     ]
     
-    # Exécution du script principal
     try:
         subprocess.run(cmd, check=True)
-        print(f"-> RUN {i} REUSSI. Modèle sauvegardé sous : {save_path}")
     except subprocess.CalledProcessError as e:
-        print(f"-> /!\\ Le RUN {i} a échoué. Erreur : {e}")
-
-print("\n=== Grid Search terminé avec succès ! ===")
+        print(f"Erreur run {i} : {e}")
