@@ -111,21 +111,21 @@ if __name__ == '__main__':
         train_dataset,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=6,
+        num_workers=0,
         pin_memory=True
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
-        num_workers=6,
+        num_workers=0,
         pin_memory=True
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=config.batch_size,
-        num_workers=6,
+        num_workers=0,
         pin_memory=True
     )
 
