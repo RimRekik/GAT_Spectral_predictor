@@ -23,7 +23,7 @@ for i, params in enumerate(experiments, 1):
     
     # On construit la commande pour exécuter main.py avec les bonnes options
     cmd = [
-        "python", "main.py",
+        "python", "../main.py",
         "--lr", str(params["lr"]),
         "--batch_size", str(params["batch_size"]),
         "--hidden_dim", str(params["hidden_dim"]),
