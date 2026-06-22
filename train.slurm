@@ -8,7 +8,7 @@
 #SBATCH --output=logs/train_%j.log        # stdout → logs/train_<job_id>.log
 #SBATCH --error=logs/train_%j.log         # stderr dans le même fichier
 #SBATCH --mail-type=END,FAIL              # email quand le job finit ou crashe
-#SBATCH --mail-user= rim.rekik-dit-nekhili@ec-lyon.fr  # à adapter si besoin
+#SBATCH --mail-user=rim.rekik-dit-nekhili@ec-lyon.fr  # à adapter si besoin
 
 # -------------------------------------------------------
 # Environnement
@@ -39,3 +39,7 @@ python main.py \
 echo "========================================"
 echo "Terminé le : $(date)"
 echo "========================================"
+# Sync WandB automatiquement après la fin du training
+echo "Synchronisation WandB..."
+wandb sync $(ls -td wandb_run/wandb/offline-run-* | head -1)
+echo "Courbes disponibles sur wandb.ai"
