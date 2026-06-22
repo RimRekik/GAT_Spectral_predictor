@@ -15,8 +15,8 @@
 # -------------------------------------------------------
 cd /store/pmcs2i/AIDIBOP/GraphSpectra
 
+source /store/pmcs2i/AIDIBOP/miniconda3/etc/profile.d/conda.sh
 conda activate grph
-
 # -------------------------------------------------------
 # Lancement
 # -------------------------------------------------------
