@@ -72,7 +72,7 @@ if __name__ == '__main__':
     # WandB init
     # -----------------------
     os.environ["WANDB_API_KEY"] = 'b4a27ac6b6145e1a5d0ee7f9e2e8c20bd101dccd'
-    os.environ["WANDB_MODE"] = "online"
+    os.environ["WANDB_MODE"] = "offline"
     os.environ["WANDB_DIR"] = os.path.abspath("./wandb_run")
 
     wandb.init(
