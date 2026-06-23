@@ -168,6 +168,12 @@ if __name__ == '__main__':
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.max_steps,
+        eta_min=1e-5
+    )
+
     print('Optimizer loaded.')
 
     # save path dir creation
@@ -188,14 +194,18 @@ if __name__ == '__main__':
 
         train_loss, batch_size = train_step(data)
 
-        pbar.set_postfix(train_loss=train_loss)
+        scheduler.step()
+
+        current_lr = scheduler.get_last_lr()[0]
+        pbar.set_postfix(train_loss=train_loss, lr=f"{current_lr:.2e}")
 
         # -----------------------
         # Logging
         # -----------------------
         wandb.log({
             "step": step,
-            "train_loss": train_loss
+            "train_loss": train_loss,
+            "lr": current_lr,
         })
 
         # -----------------------
@@ -231,7 +241,7 @@ if __name__ == '__main__':
     # -----------------------
     print("Loading best model...")
 
-    model.load_state_dict(torch.load(args.save_path))
+    model.load_state_dict(torch.load(args.save_path, weights_only=True))
 
     test_loss = evaluate(test_loader, split="test")
 

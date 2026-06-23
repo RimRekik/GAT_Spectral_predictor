@@ -1,45 +1,58 @@
-#!/bin/bash
-#SBATCH --job-name=graphspectra_train
+#SBATCH --job-name=GraphSpectra
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:quadro_rtx_6000:1      # 1 GPU (sur les 2 disponibles)
-#SBATCH --cpus-per-task=8                 # 8 CPUs : 6 pour num_workers + 2 pour le process principal
-#SBATCH --mem=80G                         # 80 GB RAM (largement suffisant, nœud a 190 GB)
-#SBATCH --time=3-00:00:00                 # 3 jours max (limite partition gpu = 4 jours)
-#SBATCH --output=logs/train_%j.log        # stdout → logs/train_<job_id>.log
-#SBATCH --error=logs/train_%j.log         # stderr dans le même fichier
-#SBATCH --mail-type=END,FAIL              # email quand le job finit ou crashe
-#SBATCH --mail-user=rim.rekik-dit-nekhili@ec-lyon.fr  # à adapter si besoin
+#SBATCH --gres=gpu:1
+#SBATCH --time=4-00:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --output=logs/train_%j.log
 
-# -------------------------------------------------------
-# Environnement
-# -------------------------------------------------------
 cd /store/pmcs2i/AIDIBOP/GraphSpectra
+module purge
+module load GCC/12.3.0
+module load Python/3.10.8-GCCcore-12.2.0-bare
+source ~/venvs/graphspectra/bin/activate
 
-source /store/pmcs2i/AIDIBOP/miniconda3/etc/profile.d/conda.sh
-conda activate grph
-# -------------------------------------------------------
-# Lancement
-# -------------------------------------------------------
 echo "========================================"
 echo "Job ID     : $SLURM_JOB_ID"
 echo "Nœud       : $SLURM_NODELIST"
 echo "GPU        : $CUDA_VISIBLE_DEVICES"
+echo "Python     : $(which python)"
 echo "Démarré le : $(date)"
 echo "========================================"
+
+nvidia-smi
+
+python -c "
+import torch
+print('CUDA dispo:', torch.cuda.is_available())
+print('Torch version:', torch.__version__)
+print('CUDA version:', torch.version.cuda)
+print('Nb GPUs:', torch.cuda.device_count())
+"
+python -c "import torch_geometric; print('PyG OK')"
 
 python main.py \
     --max_steps 10000 \
     --eval_every 300 \
     --batch_size 512 \
     --lr 0.001 \
-    --hidden_dim 128 \
+    --hidden_dim 256 \
     --num_layers 3 \
     --save_path model/model.pt
 
 echo "========================================"
 echo "Terminé le : $(date)"
 echo "========================================"
-# Sync WandB automatiquement après la fin du training
-echo "Synchronisation WandB..."
-wandb sync $(ls -td wandb_run/wandb/offline-run-* | head -1)
-echo "Courbes disponibles sur wandb.ai"
+
+# WandB sync
+WANDB_DIR="wandb_run/wandb"
+if [ -d "$WANDB_DIR" ]; then
+    for run_dir in "$WANDB_DIR"/offline-run-*/; do
+        if [ -d "$run_dir" ]; then
+            echo "Syncing $run_dir"
+            wandb sync "$run_dir"
+        fi
+    done
+else
+    echo "No wandb offline runs found"
+fi
