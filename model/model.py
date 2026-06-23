@@ -77,7 +77,7 @@ class _EdgeTypeGATBlock(nn.Module):
         out = self.conv(x, edge_index, edge_attr)
         return self.norm(x + out)
 
-
+'''
 class Hierachical_GAT(nn.Module):
     """
     GNN hiérarchique en 2 temps :
@@ -234,3 +234,120 @@ class Hierachical_GAT(nn.Module):
                 out[graph_id[valid], flat_offset + k] = ion_preds[valid, k]
 
         return out
+'''
+
+# ============================================================
+# NOUVEAU : Hierarchical_GAT avec SetTransformer readout
+# Encodeur hiérarchique (atom→AA→global) identique à avant,
+# mais readout global via SetTransformerAggregation sur les
+# noeuds AA uniquement (comme BaselineGAT) au lieu du edge-
+# level readout qui bloquait la convergence.
+# ============================================================
+class Hierachical_GAT(nn.Module):
+    """
+    Encodeur hiérarchique (inchangé) :
+        atom-atom  → raffine les embeddings atomes
+        atom-aa    → remonte l'info atomique vers les résidus
+        aa-aa      → propage le long du squelette peptidique
+        aa-global  → agrège vers le nœud de contexte (charge/énergie)
+ 
+    Readout (NOUVEAU) :
+        SetTransformerAggregation sur les nœuds AA uniquement
+        → vecteur de graphe → Linear(hidden_dim, 174)
+        Remplace l'ancien edge-level readout qui empêchait le
+        modèle de capturer les dépendances cross-position.
+    """
+ 
+    def __init__(
+        self,
+        node_feat_dim=3,
+        edge_feat_dim=3,
+        hidden_dim=128,
+        out_dim=174,
+        num_layers=3,
+        heads=4,
+        dropout=0.2,
+        max_aa_aa_edges=None,   # gardé pour compatibilité, non utilisé
+    ):
+        super().__init__()
+ 
+        self.hidden_dim = hidden_dim
+        self.out_dim = out_dim
+ 
+        # projection d'entrée
+        self.input_proj = nn.Sequential(
+            nn.Linear(node_feat_dim, hidden_dim),
+            nn.ReLU(),
+        )
+ 
+        # blocs hiérarchiques (inchangés)
+        self.atom_atom_blocks = nn.ModuleList([
+            _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
+            for _ in range(num_layers)
+        ])
+        self.atom_aa_block  = _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
+        self.aa_aa_blocks   = nn.ModuleList([
+            _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
+            for _ in range(num_layers)
+        ])
+        self.aa_global_block = _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
+ 
+        # NOUVEAU readout : SetTransformer sur les noeuds AA
+        self.readout = SetTransformerAggregation(channels=hidden_dim, heads=8)
+ 
+        # tête de prédiction globale (comme BaselineGAT)
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim),
+        )
+ 
+    @staticmethod
+    def _split_edges_by_type(edge_index, edge_attr, type_dim):
+        type_onehot = edge_attr[:, -type_dim:]
+        type_id = type_onehot.argmax(dim=1)
+        out = {}
+        for t in range(type_dim):
+            mask = type_id == t
+            out[t] = (edge_index[:, mask], edge_attr[mask])
+        return out
+ 
+    def forward(self, data):
+        x_raw, edge_index, edge_attr, batch = (
+            data.x, data.edge_index, data.edge_attr, data.batch
+        )
+ 
+        node_type_onehot = x_raw[:, -NODE_TYPE_DIM:]
+        is_aa = node_type_onehot[:, 1].bool()
+ 
+        edges_by_type = self._split_edges_by_type(edge_index, edge_attr, EDGE_TYPE_DIM)
+        ei_atom_atom, ea_atom_atom = edges_by_type[0]
+        ei_atom_aa,   ea_atom_aa   = edges_by_type[1]
+        ei_aa_aa,     ea_aa_aa     = edges_by_type[2]
+        ei_aa_global, ea_aa_global = edges_by_type[3]
+ 
+        # encodage initial
+        h = self.input_proj(x_raw)
+ 
+        # message-passing hiérarchique (inchangé)
+        for block in self.atom_atom_blocks:
+            h = block(h, ei_atom_atom, ea_atom_atom)
+ 
+        h = self.atom_aa_block(h, ei_atom_aa, ea_atom_aa)
+ 
+        for block in self.aa_aa_blocks:
+            h = block(h, ei_aa_aa, ea_aa_aa)
+ 
+        h = self.aa_global_block(h, ei_aa_global, ea_aa_global)
+ 
+        # NOUVEAU readout : on agrège uniquement les noeuds AA
+        # (les plus informatifs pour la fragmentation peptidique)
+        h_aa       = h[is_aa]               # [total_aa_nodes, hidden]
+        batch_aa   = batch[is_aa]           # batch index pour les noeuds AA
+ 
+        graph_emb  = self.readout(h_aa, index=batch_aa)  # [batch_size, hidden]
+ 
+        out = self.head(graph_emb)          # [batch_size, 174]
+        return out
+ 
