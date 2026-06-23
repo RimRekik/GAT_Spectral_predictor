@@ -35,7 +35,7 @@ python main.py \
     --max_steps 10000 \
     --eval_every 300 \
     --batch_size 512 \
-    --lr 0.001 \
+    --lr 1e-4 \
     --hidden_dim 256 \
     --num_layers 3 \
     --save_path model/model.pt
