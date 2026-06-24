@@ -1,4 +1,3 @@
-
 #!/bin/bash
 #SBATCH --job-name=GraphSpectra
 #SBATCH --partition=gpu
