@@ -1,14 +1,16 @@
+
+#!/bin/bash
 #SBATCH --job-name=GraphSpectra
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --time=4-00:00:00
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --output=logs/train_%j.log
 
 cd /store/pmcs2i/AIDIBOP/GraphSpectra
+
 module purge
-module load GCC/12.3.0
 module load Python/3.10.8-GCCcore-12.2.0-bare
 source ~/venvs/graphspectra/bin/activate
 
@@ -20,8 +22,10 @@ echo "Python     : $(which python)"
 echo "Démarré le : $(date)"
 echo "========================================"
 
+# GPU check
 nvidia-smi
 
+# PyTorch check
 python -c "
 import torch
 print('CUDA dispo:', torch.cuda.is_available())
@@ -29,8 +33,11 @@ print('Torch version:', torch.__version__)
 print('CUDA version:', torch.version.cuda)
 print('Nb GPUs:', torch.cuda.device_count())
 "
+
+# PyG check
 python -c "import torch_geometric; print('PyG OK')"
 
+# Launch training
 python main.py \
     --max_steps 10000 \
     --eval_every 300 \
