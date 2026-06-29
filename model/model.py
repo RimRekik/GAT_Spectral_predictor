@@ -3,8 +3,8 @@ from torch_geometric.nn.aggr import SetTransformerAggregation
 import torch
 import torch.nn as nn
 
-NODE_TYPE_DIM = 3   # one-hot, derniers chiffres de x  : [atom, aa, global]
-EDGE_TYPE_DIM = 4   # one-hot, derniers chiffres de edge_attr : [atom_atom, atom_aa, aa_aa, aa_global]
+NODE_TYPE_DIM = 3   
+EDGE_TYPE_DIM = 4   
 
 class AttentiveFPGraphRegressor(nn.Module):
     def __init__(self, node_feat_dim=3, edge_feat_dim=3, hidden_dim=128, out_dim=174,num_layers=3, num_timesteps=2):
@@ -52,12 +52,11 @@ class BaselineGAT(nn.Module):
 
 class _EdgeTypeGATBlock(nn.Module):
     """
-    Un bloc GATv2 appliqué uniquement sur un sous-ensemble d'arêtes
-    (filtrées par leur one-hot edge_type), avec connexion résiduelle.
-    Permet de donner un traitement (poids) distinct à chaque "étage"
-    de la hiérarchie (atom-atom, atom-aa, aa-aa, aa-global).
+    This module implements a GATv2 (Graph Attention Network v2) convolution layer
+    dedicated to a specific edge type, followed by a residual connection 
+    and layer normalization.
     """
-
+    
     def __init__(self, hidden_dim, edge_feat_dim, heads=4, dropout=0.2):
         super().__init__()
         self.conv = GATv2Conv(
@@ -76,25 +75,24 @@ class _EdgeTypeGATBlock(nn.Module):
         out = self.conv(x, edge_index, edge_attr)
         return self.norm(x + out)
 
-'''
-class Hierachical_GAT(nn.Module):
+class Hierachical_Sequential_GAT(nn.Module):
     """
-    GNN hiérarchique en 2 temps :
+    Hierarchical 2-stage GNN:
 
-    1) Message-passing ascendant, étage par étage, en routant chaque
-       message uniquement sur le sous-graphe correspondant (filtré via
-       le one-hot du type d'arête déjà présent dans edge_attr) :
-           atom-atom  -> raffine les embeddings atomes entre eux
-           atom-aa    -> remonte l'info atomes vers leur résidu (bipartite)
-           aa-aa      -> propage le long du squelette peptidique
-           aa-global  -> remonte vers le noeud global (contexte charge/energie)
+    1) Upward Message Passing (Stage-by-Stage):
+    Routes messages sequentially across specific subgraphs. Filtering is handled 
+    via the one-hot encoded edge type already present in `edge_attr`:
+        - atom-atom   -> Refines individual atom embeddings with their neighbors.
+        - atom-aa     -> Aggregates atomic information upward into their parent amino acid (bipartite).
+        - aa-aa       -> Propagates information horizontally along the peptide backbone.
+        - aa-global   -> Aggregates residue information upward into a global node (charge/energy context).
 
-    2) Lecture (readout) localisée : pour chaque arête aa-aa (= chaque
-       liaison peptidique), on combine les embeddings des 2 noeuds AA
-       + le noeud global (contexte) via un MLP -> 6 valeurs d'intensité
-       (les 6 types d'ions de fragmentation). On assemble ensuite tous
-       ces vecteurs 6-dim dans le bon emplacement d'un vecteur 174-dim,
-       le reste étant mis à 0 (comme dans la cible y).
+    2) Localized Readout:
+    For each aa-aa edge (representing a peptide bond), the embeddings of the 2 connected AA nodes 
+    and the global context node are concatenated and passed through an MLP to predict 6 intensity values 
+    (corresponding to the 6 fragmentation ion types). These 6-dimensional vectors are then scattered 
+    into their precise positions within a sparse 174-dimensional target vector, with unpredicted slots 
+    padded with 0s (matching the structure of target y).
     """
 
     def __init__(
@@ -112,19 +110,15 @@ class Hierachical_GAT(nn.Module):
 
         self.hidden_dim = hidden_dim
         self.out_dim = out_dim
-        self.n_ions = 6  # nb de types d'ions de fragmentation par liaison aa-aa
-        # nb max de liaisons aa-aa représentables dans la sortie (174 // 6 par défaut)
+        self.n_ions = 6 
         self.max_aa_aa_edges = max_aa_aa_edges or (out_dim // self.n_ions)
 
-        # encodeur d'entrée : projette les features brutes (hétérogènes
-        # selon le type de noeud, déjà paddées dans le dataset) dans
-        # un espace caché commun
+
         self.input_proj = nn.Sequential(
             nn.Linear(node_feat_dim, hidden_dim),
             nn.ReLU(),
         )
 
-        # un bloc GAT indépendant par étage hiérarchique, répété num_layers fois
         self.atom_atom_blocks = nn.ModuleList([
             _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
             for _ in range(num_layers)
@@ -136,8 +130,7 @@ class Hierachical_GAT(nn.Module):
         ])
         self.aa_global_block = _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
 
-        # tete de prediction par arete aa-aa :
-        # [emb_aa_i | emb_aa_j | emb_global_du_graphe] -> 6 intensites
+
         self.edge_head = nn.Sequential(
             nn.Linear(3 * hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -169,37 +162,35 @@ class Hierachical_GAT(nn.Module):
         is_aa = node_type_onehot[:, 1].bool()
         is_global = node_type_onehot[:, 2].bool()
 
-        # --- split des arêtes par type (0=atom_atom, 1=atom_aa, 2=aa_aa, 3=aa_global) ---
         edges_by_type = self._split_edges_by_type(edge_index, edge_attr, EDGE_TYPE_DIM)
         ei_atom_atom, ea_atom_atom = edges_by_type[0]
         ei_atom_aa, ea_atom_aa = edges_by_type[1]
         ei_aa_aa, ea_aa_aa = edges_by_type[2]
         ei_aa_global, ea_aa_global = edges_by_type[3]
 
-        # --- encodage initial commun ---
         h = self.input_proj(x_raw)
 
-        # --- étage 1 : atome <-> atome (plusieurs couches) ---
         for block in self.atom_atom_blocks:
             h = block(h, ei_atom_atom, ea_atom_atom)
 
-        # --- étage 2 : atome -> AA (remonte l'info atomique dans chaque résidu) ---
         h = self.atom_aa_block(h, ei_atom_aa, ea_atom_aa)
 
-        # --- étage 3 : AA <-> AA (propagation le long du squelette peptidique) ---
+
         for block in self.aa_aa_blocks:
             h = block(h, ei_aa_aa, ea_aa_aa)
 
-        # --- étage 4 : AA -> global (contexte charge / énergie de collision) ---
+
         h = self.aa_global_block(h, ei_aa_global, ea_aa_global)
 
-        # --- lecture par arête aa-aa ---
-        # to_undirected() (appliqué dans le dataset) duplique chaque arête
-        # aa-aa en (i->j) et (j->i) : on ne garde qu'un seul sens (src < dst)
-        # pour avoir une seule prédiction par liaison peptidique, dans un
-        # ordre stable correspondant à la position dans la séquence.
+        '''--- Readout per aa-aa edge ---
+         to_undirected() (applied during dataset preprocessing) duplicates each
+         aa-aa edge into both (i -> j) and (j -> i) directions. We keep only
+         a single direction (src < dst) to ensure exactly one prediction per
+         peptide bond, maintaining a stable order that maps to the sequence position.
+        '''
         batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
         out = h.new_zeros((batch_size, self.out_dim))
+
 
         if ei_aa_aa.numel() > 0:
             keep = ei_aa_aa[0] < ei_aa_aa[1]
@@ -208,7 +199,7 @@ class Hierachical_GAT(nn.Module):
             src = dst = ei_aa_aa.new_zeros((0,), dtype=torch.long)
 
         if src.numel() > 0:
-            # contexte global du graphe correspondant à chaque noeud (pour broadcast par arête)
+            # Global graph context corresponding to each node (for edge broadcasting)
             global_emb_per_graph = h.new_zeros((batch_size, self.hidden_dim))
             global_emb_per_graph[batch[is_global]] = h[is_global]
             global_emb_per_edge = global_emb_per_graph[batch[src]]
@@ -216,10 +207,11 @@ class Hierachical_GAT(nn.Module):
             edge_emb = torch.cat([h[src], h[dst], global_emb_per_edge], dim=1)
             ion_preds = self.edge_head(edge_emb)  # [num_aa_aa_edges_total_batch, 6]
 
-            # position de chaque arête aa-aa dans la séquence du peptide
-            # (rang local au sein de son propre graphe, src < dst donc
-            # l'ordre suit la construction du dataset : idx, idx+1, ...),
-            # pour la placer au bon emplacement du vecteur 174-dim
+            # Position of each aa-aa edge within the peptide sequence.
+            # (Local rank within its own graph; since src < dst, the order
+            # follows the dataset construction: idx, idx+1, ...).
+            # Used to scatter the prediction into the correct index of the 174-dim vector.
+
             graph_id = batch[src]
             local_rank = torch.zeros_like(graph_id)
             for g in range(batch_size):
@@ -233,25 +225,25 @@ class Hierachical_GAT(nn.Module):
                 out[graph_id[valid], flat_offset + k] = ion_preds[valid, k]
 
         return out
-'''
+    
+
+
 
 # ============================================================
 # NOUVEAU : Hierarchical_GAT avec SetTransformer readout
 # ============================================================
-class Hierachical_GAT(nn.Module):
+class Hierachical_Sequential_GAT_with_SetTransformerReadout(nn.Module):
     """
-    Encodeur hiérarchique (inchangé) :
-        atom-atom  → raffine les embeddings atomes
-        atom-aa    → remonte l'info atomique vers les résidus
-        aa-aa      → propage le long du squelette peptidique
-        aa-global  → agrège vers le nœud de contexte (charge/énergie)
- 
-    Readout (NOUVEAU) :
-        SetTransformerAggregation sur les nœuds AA uniquement
-        → vecteur de graphe → Linear(hidden_dim, 174)
-     
+    Hierarchical Encoder (Unchanged):
+        atom-atom  → Refines atom embeddings.
+        atom-aa    → Aggregates atomic information upward into residues.
+        aa-aa      → Propagates information along the peptide backbone.
+        aa-global  → Aggregates residue information upward into the global context node (charge/energy).
+
+    Readout :
+        SetTransformerAggregation applied strictly to AA nodes 
+        → Graph-level embedding vector → Linear(hidden_dim, 174)
     """
- 
     def __init__(
         self,
         node_feat_dim=3,
