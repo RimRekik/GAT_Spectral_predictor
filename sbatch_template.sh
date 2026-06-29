@@ -7,7 +7,7 @@
 #SBATCH --mem=64G
 #SBATCH --output=logs/train_run_%j.log
 
-cd /store/pmcs2i/AIDIBOP/GraphSpectra
+cd /store/pmcs2i/AIDIBOP/GAT_Spectral_predictor
 
 module purge
 module load Python/3.10.8-GCCcore-12.2.0-bare
