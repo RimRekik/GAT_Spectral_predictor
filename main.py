@@ -30,8 +30,9 @@ def train_step(data):
     out = model(data)
 
     loss = masked_spectral_distance(
-        out,
-        data.y.view(data.num_graphs, -1)
+        data.y.view(data.num_graphs, -1),
+        out
+        
     )
 
     loss.backward()
