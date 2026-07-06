@@ -3,41 +3,28 @@ from torch_geometric.loader import DataLoader
 from tqdm import tqdm
 import wandb
 import os
-import itertools
-import numpy as np
-from data.streaming_dataset import StreamingSpectraDataset
 from data.hierarchical_streaming_dataset import HierarchicalStreamingSpectraDataset
-from model.model import AttentiveFPGraphRegressor, BaselineGAT, Hierachical_Sequential_GAT_with_SetTransformerReadout
+from model.model import build_model
 from model.losses import masked_spectral_distance
 from config import load_args
 
 
 def infinite_loader(loader):
-    """Creates an infinite dataloader iterator."""
+    """Wraps a DataLoader into an infinite iterator, reshuffling chunks every pass."""
     while True:
-        loader.dataset.chunk_shuffle()  # reshuffle chunks every pass
+        loader.dataset.chunk_shuffle()
         for batch in loader:
             yield batch
 
 
 def train_step(data):
     model.train()
-
     data = data.to(device)
-
     optimizer.zero_grad()
-
-    out = model(data)
-
-    loss = masked_spectral_distance(
-        data.y.view(data.num_graphs, -1),
-        out
-        
-    )
-
+    out  = model(data)
+    loss = masked_spectral_distance(data.y.view(data.num_graphs, -1), out)
     loss.backward()
     optimizer.step()
-
     return loss.item(), data.num_graphs
 
 
@@ -45,23 +32,13 @@ def train_step(data):
 def evaluate(loader, split="val"):
     model.eval()
     total_loss = 0
-
     pbar = tqdm(loader, desc=f"[{split.upper()}]")
-
     for data in pbar:
         data = data.to(device)
-
-        out = model(data)
-
-        loss = masked_spectral_distance(
-            out,
-            data.y.view(data.num_graphs, -1)
-        )
-
+        out  = model(data)
+        loss = masked_spectral_distance(data.y.view(data.num_graphs, -1),out)
         total_loss += loss.item() * data.num_graphs
-
         pbar.set_postfix(loss=loss.item())
-
     return total_loss / len(loader.dataset)
 
 
@@ -69,187 +46,88 @@ if __name__ == '__main__':
 
     args = load_args()
 
-    # -----------------------
-    # WandB init
-    # -----------------------
+    # ── WandB ────────────────────────────────────────────────────────────────
     os.environ["WANDB_API_KEY"] = 'b4a27ac6b6145e1a5d0ee7f9e2e8c20bd101dccd'
-    os.environ["WANDB_MODE"] = "offline"
-    os.environ["WANDB_DIR"] = os.path.abspath("./wandb_run")
+    os.environ["WANDB_MODE"]    = "offline"
+    os.environ["WANDB_DIR"]     = os.path.abspath("./wandb_run")
 
     wandb.init(
         project="attentivefp-spectra",
-        config={
-            "batch_size": args.batch_size,
-            "lr": args.lr,
-            "max_steps": args.max_steps,
-            "eval_every": args.eval_every,
-            "hidden_dim": args.hidden_dim,
-            "num_layers": args.num_layers,
-            "num_timesteps": args.num_timesteps,
-        }
+        config=vars(args),   # logs every arg including --model
     )
-
     config = wandb.config
 
-    # -----------------------
-    # Data
-    # -----------------------
+    # ── Data ─────────────────────────────────────────────────────────────────
     train_dataset = HierarchicalStreamingSpectraDataset(root=args.root_train)
-    val_dataset = HierarchicalStreamingSpectraDataset(root=args.root_val)
-    test_dataset = HierarchicalStreamingSpectraDataset(root=args.root_test)
+    val_dataset   = HierarchicalStreamingSpectraDataset(root=args.root_val)
+    test_dataset  = HierarchicalStreamingSpectraDataset(root=args.root_test)
 
+    sample = train_dataset[0]
     print('Data loaded.')
-    print(
-        'Data dim -- node : ',
-        train_dataset[0].x.shape,
-        ' edge : ',
-        train_dataset[0].edge_attr.shape,
-        ' y : ',
-        train_dataset[0].y.shape
-    )
+    print(f"  node features : {sample.x.shape}")
+    print(f"  edge features : {sample.edge_attr.shape}")
+    print(f"  target        : {sample.y.shape}")
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        num_workers=1,
-        pin_memory=True
-    )
+    loader_kwargs = dict(batch_size=config.batch_size, num_workers=1, pin_memory=True)
+    train_loader  = DataLoader(train_dataset, shuffle=False, **loader_kwargs)
+    val_loader    = DataLoader(val_dataset,   **loader_kwargs)
+    test_loader   = DataLoader(test_dataset,  **loader_kwargs)
+    train_iter    = infinite_loader(train_loader)
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size,
-        num_workers=1,
-        pin_memory=True
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.batch_size,
-        num_workers=1,
-        pin_memory=True
-    )
-
-    train_iter = infinite_loader(train_loader)
-
-    # -----------------------
-    # Model
-    # -----------------------
-    # model = AttentiveFPGraphRegressor(
-    #     node_feat_dim=train_dataset[0].x.shape[1],
-    #     edge_feat_dim=train_dataset[0].edge_attr.shape[1],
-    #     hidden_dim=args.hidden_dim,
-    #     num_layers=args.num_layers,
-    #     num_timesteps=args.num_timesteps,
-    #     out_dim=174
-    # )
-
-    #model = BaselineGAT(
-    #    node_feat_dim=train_dataset[0].x.shape[1],
-    #   edge_feat_dim=train_dataset[0].edge_attr.shape[1],
-    #    hidden_dim=args.hidden_dim,
-    #    num_layers=args.num_layers,
-    #    out_dim=174
-    #)
-
-    model = Hierachical_Sequential_GAT_with_SetTransformerReadout(
-         node_feat_dim=train_dataset[0].x.shape[1],
-         edge_feat_dim=train_dataset[0].edge_attr.shape[1],
-         hidden_dim=args.hidden_dim,
-         num_layers=args.num_layers,
-         out_dim=174
-     )
-
+    # ── Model — built from config.model ──────────────────────────────────────
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Device used:', device)
+    print(f"Device : {device}")
 
-    model = model.to(device)
+    model = build_model({
+        **vars(args),
+        "node_feat_dim": sample.x.shape[1],
+        "edge_feat_dim": sample.edge_attr.shape[1],
+        "out_dim":       174,
+    }).to(device)
 
-    print('Model loaded.')
+    print(f"Model  : {args.model}  ({sum(p.numel() for p in model.parameters()):,} params)")
 
+    # ── Optimizer & scheduler ─────────────────────────────────────────────────
     optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config.max_steps,
-        eta_min=1e-5
+        optimizer, T_max=config.max_steps, eta_min=1e-5
     )
 
-    print('Optimizer loaded.')
-
-    # save path dir creation
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
-    # -----------------------
-    # Step-based training loop
-    # -----------------------
+    # ── Training loop (step-based) ────────────────────────────────────────────
     best_loss = float('inf')
+    print('Starting training...')
 
-    print('Starting Training...')
-
-    pbar = tqdm(range(1, config.max_steps + 1), desc="Training")
-
-    for step in pbar:
+    for step in (pbar := tqdm(range(1, config.max_steps + 1), desc="Training")):
 
         data = next(train_iter)
-
-        train_loss, batch_size = train_step(data)
-
+        train_loss, _ = train_step(data)
         scheduler.step()
 
         current_lr = scheduler.get_last_lr()[0]
-        pbar.set_postfix(train_loss=train_loss, lr=f"{current_lr:.2e}")
+        pbar.set_postfix(train_loss=f"{train_loss:.4f}", lr=f"{current_lr:.2e}")
 
-        # -----------------------
-        # Logging
-        # -----------------------
-        wandb.log({
-            "step": step,
-            "train_loss": train_loss,
-            "lr": current_lr,
-        })
+        wandb.log({"step": step, "train_loss": train_loss, "lr": current_lr})
 
-        # -----------------------
-        # Validation
-        # -----------------------
+        # ── Validation ───────────────────────────────────────────────────────
         if step % config.eval_every == 0:
-
             val_loss = evaluate(val_loader, split="val")
 
-            print(
-                f"\nStep {step:06d} | "
-                f"Train Loss: {train_loss:.4f} | "
-                f"Val Loss: {val_loss:.4f}"
-            )
+            print(f"\nStep {step:06d} | Train {train_loss:.4f} | Val {val_loss:.4f}")
+            wandb.log({"step": step, "val_loss": val_loss})
 
-            wandb.log({
-                "step": step,
-                "val_loss": val_loss
-            })
-
-            # -----------------------
-            # Save best model
-            # -----------------------
             if val_loss < best_loss:
                 best_loss = val_loss
-
                 torch.save(model.state_dict(), args.save_path)
+                print(f"  → best model saved (val_loss={best_loss:.4f})")
 
-                print(f"Best model saved at step {step}")
-
-    # -----------------------
-    # Test
-    # -----------------------
-    print("Loading best model...")
-
+    # ── Test ──────────────────────────────────────────────────────────────────
+    print("Loading best model for test evaluation...")
     model.load_state_dict(torch.load(args.save_path, weights_only=True))
 
     test_loss = evaluate(test_loader, split="test")
+    print(f"Test loss : {test_loss:.4f}")
 
-    print("Test Loss:", test_loss)
-
-    wandb.log({
-        "test_loss": test_loss
-    })
-
+    wandb.log({"test_loss": test_loss})
     wandb.finish()
