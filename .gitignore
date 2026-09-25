@@ -1,3 +1,10 @@
-/.idea/
-/.venv/
-.gitignore
+__pycache__/
+*.pyc
+*.pt
+model/
+saved_model_full/
+logs/
+wandb_run/
+*_predictions.csv
+speedtest.sh
+check_collapse.py

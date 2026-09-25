@@ -17,18 +17,24 @@ def load_args():
     parser.add_argument('--model_type', type=str, default='GAT')
     parser.add_argument('--graph_structure', type=str, default='complete',
                          choices=['complete', 'atom_aa', 'aa_only', 'atomic_only'],
-                         help="Graph-structure ablation condition. 'complete'/'atom_aa'/'aa_only' "
-                              "prune the hierarchical dataset (root_* must point to a hierarchical "
-                              "dataset) down to the requested node/edge subset before training a "
-                              "hierarchical model unchanged. 'atomic_only' is a distinct pipeline: "
-                              "it loads the flat atom-only dataset (root_* must point to a "
-                              "baseline_dataset) for use with --model_type GAT/local_GAT.")
+                         help="Graph-structure ablation condition. All four conditions "
+                              "('complete', 'atom_aa', 'aa_only', 'atomic_only') prune the same "
+                              "hierarchical dataset (root_* must point to a hierarchical dataset) "
+                              "down to the requested node/edge subset before training a "
+                              "hierarchical model unchanged. 'atomic_only' keeps atom nodes and "
+                              "atom-atom edges only.")
     parser.add_argument('--num_layers', type=int, default=5)
     parser.add_argument('--num_timesteps', type=int, default=2)
     parser.add_argument('--dropout', type=float, default=0.)
     parser.add_argument('--activation', type=str, default=None)
     parser.add_argument('--scheduler', type=str, default='cosine')
     parser.add_argument('--load_weights', type=str, default=None)
+    parser.add_argument('--jumping_knowledge', action='store_true', default=False,
+                         help="If set, the readout pools a projection of ALL intermediate "
+                              "layer states (concatenated) instead of only the last layer's "
+                              "output. Mitigates over-smoothing on small node sets (e.g. "
+                              "aa_only's 19 AA nodes with many message-passing layers). "
+                              "Off by default to not alter existing runs/results.")
     args = parser.parse_args()
 
     return args

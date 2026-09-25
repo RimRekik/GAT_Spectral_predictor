@@ -2,23 +2,21 @@
 Graph-structure ablation views.
 
 The hierarchical graph built by `hierarchical_streaming_dataset.py` already
-contains everything needed for the "aa_only" / "atom_aa" / "complete"
-conditions of the graph-structure ablation: atom nodes, AA nodes, a global
-node, and 4 typed edge sets (atom-atom, atom-aa, aa-aa, aa-global), all
-sharing one padded feature layout (see `_pad_features` in that module).
+contains everything needed for every condition of the graph-structure
+ablation ("complete", "atom_aa", "aa_only", "atomic_only"): atom nodes, AA
+nodes, a global node, and 4 typed edge sets (atom-atom, atom-aa, aa-aa,
+aa-global), all sharing one padded feature layout (see `_pad_features` in
+that module).
 
 Rather than re-running RDKit featurization for each condition, this module
 prunes an already-built hierarchical `Data` object down to the requested
 node/edge subset. Node and edge feature layout is left untouched, so the
 *same* hierarchical model class (`model/model_2.py`) can be trained on any
-of the three structures unchanged -- only which nodes/edges it can see
+of the four structures unchanged -- only which nodes/edges it can see
 changes. That keeps model architecture fixed and isolates the graph
-structure as the sole ablated variable.
-
-"atomic_only" is intentionally NOT covered here: it uses a different node
-schema entirely (no AA/global level, atom features only, no padding) coming
-from `precompute_dataset.py` / `streaming_dataset.py`, paired with the
-flat `BaselineGAT` model. See ablation study doc for the rationale.
+structure as the sole ablated variable, and lets every condition (including
+"atomic_only") reuse the same precomputed hierarchical dataset instead of
+needing a separate flat `baseline_dataset`.
 """
 
 import torch
@@ -29,12 +27,13 @@ EDGE_TYPE_DIM = 4  # last 4 cols of edge_attr: [atom-atom, atom-aa, aa-aa, aa-gl
 
 ATOM_ATOM, ATOM_AA, AA_AA, AA_GLOBAL = range(4)
 
-STRUCTURES = ("complete", "atom_aa", "aa_only")
+STRUCTURES = ("complete", "atom_aa", "aa_only", "atomic_only")
 
 # which edge types survive, per structure (complete keeps all, handled separately)
 _KEEP_EDGE_TYPES = {
     "atom_aa": {ATOM_ATOM, ATOM_AA, AA_AA},
     "aa_only": {AA_AA},
+    "atomic_only": {ATOM_ATOM},
 }
 
 
@@ -49,19 +48,26 @@ def restrict_to_structure(data: Data, structure: str) -> Data:
     condition. `data` must be a hierarchical graph (atom+aa+global nodes,
     4 typed edge sets) as produced by `process_batch_hierarchical`.
 
-    complete : unchanged (atom + aa + global nodes, all 4 edge types)
-    atom_aa  : atom + aa nodes only; atom-atom / atom-aa / aa-aa edges
-               (drops the global node and aa-global edges)
-    aa_only  : aa nodes only; aa-aa edges only
-               (drops atom + global nodes and every atom-* edge)
+    complete     : unchanged (atom + aa + global nodes, all 4 edge types)
+    atom_aa      : atom + aa nodes only; atom-atom / atom-aa / aa-aa edges
+                   (drops the global node and aa-global edges)
+    aa_only      : aa nodes only; aa-aa edges only
+                   (drops atom + global nodes and every atom-* edge)
+    atomic_only  : atom nodes only; atom-atom edges only
+                   (drops aa + global nodes and every aa-*/global edge)
     """
     if structure == "complete":
         return data
     if structure not in STRUCTURES:
-        raise ValueError(f"Unknown graph structure '{structure}'. Expected one of {('complete',) + STRUCTURES[1:]}.")
+        raise ValueError(f"Unknown graph structure '{structure}'. Expected one of {STRUCTURES}.")
 
     is_atom, is_aa, _is_global = _node_type_masks(data.x)
-    keep_node = is_aa if structure == "aa_only" else (is_atom | is_aa)
+    if structure == "aa_only":
+        keep_node = is_aa
+    elif structure == "atomic_only":
+        keep_node = is_atom
+    else:
+        keep_node = is_atom | is_aa
 
     keep_node_idx = keep_node.nonzero(as_tuple=True)[0]
     remap = torch.full((data.x.shape[0],), -1, dtype=torch.long)

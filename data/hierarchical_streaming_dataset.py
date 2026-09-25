@@ -324,7 +324,7 @@ class HierarchicalStreamingSpectraDataset(Dataset):
                 path, size = line.strip().split(",")
                 size = int(size)
 
-                self.chunk_files.append(path)
+                self.chunk_files.append(os.path.join(root, os.path.basename(path)))
                 total += size
                 self.cumulative_sizes.append(total)
 

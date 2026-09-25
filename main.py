@@ -6,7 +6,6 @@ import wandb
 import os
 import itertools
 import numpy as np
-from data.streaming_dataset import StreamingSpectraDataset
 from data.hierarchical_streaming_dataset import HierarchicalStreamingSpectraDataset
 from data.graph_structure_views import make_structure_transform
 from model.model import BaselineGAT, BondBreakPredictor
@@ -129,20 +128,14 @@ if __name__ == '__main__':
     # -----------------------
     # Data
     # -----------------------
-    if config.graph_structure == "atomic_only":
-        # Distinct pipeline: flat atom-only graphs (no AA/global level),
-        # root_* must point to a `baseline_dataset` root (precompute_dataset.py).
-        train_dataset = StreamingSpectraDataset(root=args.root_train)
-        val_dataset = StreamingSpectraDataset(root=args.root_val)
-        test_dataset = StreamingSpectraDataset(root=args.root_test)
-    else:
-        # complete / atom_aa / aa_only: same hierarchical dataset, pruned to the
-        # requested node/edge subset via a PyG transform (see graph_structure_views.py).
-        # root_* must point to a hierarchical dataset (hierarchical_streaming_dataset.py).
-        structure_transform = make_structure_transform(config.graph_structure)
-        train_dataset = HierarchicalStreamingSpectraDataset(root=args.root_train, transform=structure_transform)
-        val_dataset = HierarchicalStreamingSpectraDataset(root=args.root_val, transform=structure_transform)
-        test_dataset = HierarchicalStreamingSpectraDataset(root=args.root_test, transform=structure_transform)
+    # complete / atom_aa / aa_only / atomic_only: all share the same hierarchical
+    # dataset, pruned to the requested node/edge subset via a PyG transform
+    # (see graph_structure_views.py). root_* must point to a hierarchical
+    # dataset (hierarchical_streaming_dataset.py) in every case.
+    structure_transform = make_structure_transform(config.graph_structure)
+    train_dataset = HierarchicalStreamingSpectraDataset(root=args.root_train, transform=structure_transform)
+    val_dataset = HierarchicalStreamingSpectraDataset(root=args.root_val, transform=structure_transform)
+    test_dataset = HierarchicalStreamingSpectraDataset(root=args.root_test, transform=structure_transform)
 
     print('Data loaded.')
     print(
@@ -200,7 +193,7 @@ if __name__ == '__main__':
         model = Hierachical_Sequential_GAT_Global(node_feat_dim=train_dataset[0].x.shape[1],
                     edge_feat_dim=train_dataset[0].edge_attr.shape[1], hidden_dim=args.hidden_dim,
                  out_dim=174, num_layers=args.num_layers, heads=4, dropout=config.dropout,
-                 max_aa_aa_edges=None,)
+                 max_aa_aa_edges=None, jumping_knowledge=config.jumping_knowledge,)
 
     elif config.model_type == "local_hierarchical_GAT":
         model = Hierachical_Sequential_GAT(node_feat_dim=train_dataset[0].x.shape[1],

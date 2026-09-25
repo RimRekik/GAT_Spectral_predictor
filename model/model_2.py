@@ -140,6 +140,10 @@ class _GlobalReadout(nn.Module):
     Only AA nodes are used: the MS/MS spectrum depends on peptide bond
     fragmentation, which operates at the residue level. Atom embeddings
     have already been propagated into AA nodes via atom_aa message passing.
+
+    Fallback for the "atomic_only" graph-structure ablation: when no AA
+    nodes survive the pruning, pools over atom embeddings instead.
+    See `readout_pool_mask` below.
     """
     def __init__(self, hidden_dim, out_dim, dropout):
         super().__init__()
@@ -150,10 +154,17 @@ class _GlobalReadout(nn.Module):
             nn.Linear(hidden_dim, out_dim), nn.LeakyReLU(),  # as for baseline Prosit's regressor output
         )
 
-    def forward(self, h_aa, batch_aa):
-        # h_aa   : [num_aa_nodes_in_batch, hidden_dim]
+    def forward(self, h_pool, batch_pool):
+        # h_pool : [num_pooled_nodes_in_batch, hidden_dim] (AA nodes, or atom
+        #          nodes as a fallback when no AA nodes are present)
         # output : [batch_size, out_dim]
-        return self.head(self.readout(h_aa, index=batch_aa))
+        return self.head(self.readout(h_pool, index=batch_pool))
+
+
+def readout_pool_mask(is_atom, is_aa):
+    """Pool over AA nodes normally; fall back to atom nodes if none remain
+    (the "atomic_only" ablation)."""
+    return is_aa if is_aa.any() else is_atom
 
 
 # ─────────────────────────────────────────────
@@ -229,7 +240,7 @@ class Hierachical_Sequential_GAT_Global(nn.Module):
     """
     def __init__(self, node_feat_dim=3, edge_feat_dim=3, hidden_dim=128,
                  out_dim=174, num_layers=3, heads=4, dropout=0.2,
-                 max_aa_aa_edges=None, **kwargs):
+                 max_aa_aa_edges=None, jumping_knowledge=False, **kwargs):
         super().__init__()
         self.input_proj       = nn.Sequential(nn.Linear(node_feat_dim, hidden_dim), nn.ReLU())
         self.atom_atom_blocks = nn.ModuleList([_EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout) for _ in range(num_layers)])
@@ -238,20 +249,44 @@ class Hierachical_Sequential_GAT_Global(nn.Module):
         self.aa_global_block  = _EdgeTypeGATBlock(hidden_dim, edge_feat_dim, heads, dropout)
         self.readout_head     = _GlobalReadout(hidden_dim, out_dim, dropout)
 
+        # Jumping Knowledge (opt-in, off by default): concatenate every
+        # intermediate layer's node states (instead of using only the last
+        # block's output) before the readout, then project back down to
+        # hidden_dim. Mitigates over-smoothing -- with many message-passing
+        # layers over few nodes (e.g. 19 AA nodes), node embeddings can
+        # converge to near-identical vectors by the final layer, erasing
+        # the per-peptide signal the readout needs.
+        self.jumping_knowledge = jumping_knowledge
+        if jumping_knowledge:
+            n_layer_outputs = 2 * num_layers + 2  # atom_atom_blocks + atom_aa_block + aa_aa_blocks + aa_global_block
+            self.jk_proj = nn.Sequential(
+                nn.Linear(n_layer_outputs * hidden_dim, hidden_dim), nn.ReLU(),
+            )
+
     def forward(self, data):
         x_raw, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
-        _, is_aa, _ = get_node_masks(x_raw)
+        is_atom, is_aa, _ = get_node_masks(x_raw)
         (ei_aa, ea_aa), (ei_atom_aa, ea_atom_aa), \
         (ei_aa_aa, ea_aa_aa), (ei_aa_glob, ea_aa_glob) = split_edges_by_type(edge_index, edge_attr, EDGE_TYPE_DIM)
 
         h = self.input_proj(x_raw)
+        layer_outputs = []
         for block in self.atom_atom_blocks:
             h = block(h, ei_aa, ea_aa)
+            layer_outputs.append(h)
         h = self.atom_aa_block(h, ei_atom_aa, ea_atom_aa)
+        layer_outputs.append(h)
         for block in self.aa_aa_blocks:
             h = block(h, ei_aa_aa, ea_aa_aa)
+            layer_outputs.append(h)
         h = self.aa_global_block(h, ei_aa_glob, ea_aa_glob)
-        return self.readout_head(h[is_aa], batch[is_aa])
+        layer_outputs.append(h)
+
+        if self.jumping_knowledge:
+            h = self.jk_proj(torch.cat(layer_outputs, dim=-1))
+
+        pool = readout_pool_mask(is_atom, is_aa)
+        return self.readout_head(h[pool], batch[pool])
 
 
 class Hierarchical_Cyclic_Sequential_GAT(nn.Module):
@@ -385,7 +420,7 @@ class Hierarchical_Cyclic_Sequential_GAT_Global(nn.Module):
         for cycle in range(self.num_layers):
             h = self._cycle(h, cycle, edges, is_atom, is_aa, is_global, delta)
 
-        return self.readout_head(h[is_aa], batch[is_aa])
+        return self.readout_head(h[readout_pool_mask(is_atom, is_aa)], batch[readout_pool_mask(is_atom, is_aa)])
 
 
 # ─────────────────────────────────────────────
