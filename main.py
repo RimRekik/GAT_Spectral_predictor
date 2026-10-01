@@ -8,6 +8,8 @@ import itertools
 import numpy as np
 from data.hierarchical_streaming_dataset import HierarchicalStreamingSpectraDataset
 from data.graph_structure_views import make_structure_transform
+from data.feature_standardization import compute_node_feature_stats, StandardizeNodeFeatures
+from torch_geometric.transforms import Compose
 from model.model import BaselineGAT, BondBreakPredictor
 from model.model_2 import (Hierachical_Sequential_GAT, Hierachical_Sequential_GAT_Global,
                            Hierarchical_Cyclic_Sequential_GAT, Hierarchical_Cyclic_Sequential_GAT_Global)
@@ -120,6 +122,9 @@ if __name__ == '__main__':
             "scheduler":args.scheduler,
             "activation":args.activation,
             "load_weights":args.load_weights,
+            "jumping_knowledge":args.jumping_knowledge,
+            "standardize_features":args.standardize_features,
+            "stats_samples":args.stats_samples,
         }
     )
 
@@ -132,10 +137,22 @@ if __name__ == '__main__':
     # dataset, pruned to the requested node/edge subset via a PyG transform
     # (see graph_structure_views.py). root_* must point to a hierarchical
     # dataset (hierarchical_streaming_dataset.py) in every case.
+    # Feature standardization runs before pruning so every structure uses the
+    # same statistics (computed on the full hierarchical train graphs).
+    train_dataset = HierarchicalStreamingSpectraDataset(root=args.root_train)
+    transforms = []
+    if config.standardize_features:
+        feat_mean, feat_std = compute_node_feature_stats(train_dataset, config.stats_samples)
+        transforms.append(StandardizeNodeFeatures(feat_mean, feat_std))
+        print('Node feature stats computed on', min(config.stats_samples, len(train_dataset)), 'train graphs.')
     structure_transform = make_structure_transform(config.graph_structure)
-    train_dataset = HierarchicalStreamingSpectraDataset(root=args.root_train, transform=structure_transform)
-    val_dataset = HierarchicalStreamingSpectraDataset(root=args.root_val, transform=structure_transform)
-    test_dataset = HierarchicalStreamingSpectraDataset(root=args.root_test, transform=structure_transform)
+    if structure_transform is not None:
+        transforms.append(structure_transform)
+    transform = Compose(transforms) if transforms else None
+
+    train_dataset.transform = transform
+    val_dataset = HierarchicalStreamingSpectraDataset(root=args.root_val, transform=transform)
+    test_dataset = HierarchicalStreamingSpectraDataset(root=args.root_test, transform=transform)
 
     print('Data loaded.')
     print(
@@ -263,6 +280,11 @@ if __name__ == '__main__':
 
             train_loss, median, batch_size = train_step(data)
 
+            # cosine is annealed over max_steps, so it must step every training step
+            if config.scheduler == 'cosine':
+                scheduler.step()
+                current_lr = optimizer.param_groups[0]["lr"]
+
             pbar.set_postfix(train_loss=train_loss, median = median)
 
             # -----------------------
@@ -286,8 +308,6 @@ if __name__ == '__main__':
 
                 if config.scheduler == 'plateau':
                     scheduler.step(val_loss)
-                elif config.scheduler == 'cosine':
-                    scheduler.step()
                     current_lr = optimizer.param_groups[0]["lr"]
 
                 print(

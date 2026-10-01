@@ -35,6 +35,13 @@ def load_args():
                               "output. Mitigates over-smoothing on small node sets (e.g. "
                               "aa_only's 19 AA nodes with many message-passing layers). "
                               "Off by default to not alter existing runs/results.")
+    parser.add_argument('--standardize_features', action=argparse.BooleanOptionalAction, default=True,
+                         help="Standardize node features per node type (atom / aa / global) with "
+                              "mean/std from the first --stats_samples training graphs. Without it, "
+                              "unscaled AA features (mol_weight, pKa, ...) plus per-block LayerNorm "
+                              "make AA embeddings nearly identical. --no-standardize_features "
+                              "reproduces runs made before this option existed.")
+    parser.add_argument('--stats_samples', type=int, default=20000)
     args = parser.parse_args()
 
     return args
