@@ -210,7 +210,7 @@ if __name__ == '__main__':
         model = Hierachical_Sequential_GAT_Global(node_feat_dim=train_dataset[0].x.shape[1],
                     edge_feat_dim=train_dataset[0].edge_attr.shape[1], hidden_dim=args.hidden_dim,
                  out_dim=174, num_layers=args.num_layers, heads=4, dropout=config.dropout,
-                 max_aa_aa_edges=None, jumping_knowledge=config.jumping_knowledge,)
+                 max_aa_aa_edges=None, jumping_knowledge=args.jumping_knowledge,)
 
     elif config.model_type == "local_hierarchical_GAT":
         model = Hierachical_Sequential_GAT(node_feat_dim=train_dataset[0].x.shape[1],
